@@ -6,14 +6,12 @@ import time
 import csv
 from multiprocessing import Pool, cpu_count
 start_time=time.time()
-# Configuration Parameters
+
+#creates csv file needed for looping through the dataset
+
 files = ["1986_2000/1981_1985.nc", "1986_2000/1986_1990.nc",
          "1986_2000/1991_1995.nc", "1986_2000/1996_2000.nc"]
-batch_size = 16
-lat_increment, lon_increment =20, 20
-lat_window, lon_window = 100, 100
-time_window = 4
-chunk_size = 10000
+
 
 dataset = MFDataset(files).variables["sst"]
 
