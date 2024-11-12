@@ -14,7 +14,7 @@ files = ["1986_2000/1981_1985.nc", "1986_2000/1986_1990.nc",
 
 
 dataset = MFDataset(files).variables["sst"]
-lat_increment, lon_window = 20,20
+lat_increment, lon_increment = 20,20
 lat_window, lon_window = 100, 100
 time_window = 4
 lat_range = torch.arange(0, 720 - lat_window, lat_increment)
