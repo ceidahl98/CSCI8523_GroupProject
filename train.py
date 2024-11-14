@@ -42,13 +42,17 @@ class SSTDataset(torch.utils.data.Dataset):  #dataset class
 
 
 
-files = ["1986_2000/1981_1985.nc","1986_2000/1986_1990.nc","1986_2000/1991_1995.nc","1986_2000/1996_2000.nc"]
-
+files = ["data/1981_1985.nc", "data/1986_1990.nc",
+             "data/1991_1995.nc", "data/1996_2000.nc",
+             "data/2001_2005.nc", "data/2006_2010.nc",
+             "data/2011_2015.nc", "data/2016_2020.nc",
+             "data/2021_2024.nc"]
 #TODO add validation/test sets
 
+
 t_window = 4
-lon_window = 100
-lat_window = 100
+lon_window = 16
+lat_window = 16
 batch_size = 16
 num_epochs = 1
 
@@ -69,7 +73,7 @@ train_dataLoader = DataLoader(dataset,batch_size=batch_size,shuffle=True)
 for epoch in range(num_epochs):
     for image,labels in iter(train_dataLoader): #iterates through dataset
 
-
+        print(image.shape)
         #run through model
         #TODO build model and update code below
 
