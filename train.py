@@ -5,6 +5,7 @@ import numpy as np
 from netCDF4 import Dataset,MFDataset
 import matplotlib.pyplot as plt
 import pandas as pd
+from EncoderDecoder import Encoder, Decoder
 
 torch.manual_seed(0) #makes training reproducible
 
@@ -47,6 +48,7 @@ files = ["data/1981_1985.nc", "data/1986_1990.nc",
              "data/2001_2005.nc", "data/2006_2010.nc",
              "data/2011_2015.nc", "data/2016_2020.nc",
              "data/2021_2024.nc"]
+# files = ["data/1981_1985.nc", "data/1986_1990.nc"]
 #TODO add validation/test sets
 
 
@@ -69,14 +71,48 @@ train_dataLoader = DataLoader(dataset,batch_size=batch_size,shuffle=True)
 
 #optimizer = torch.optim.AdamW(model.parameters(),lr=0.0002,betas=(.9, .95), eps=1e-8)
 #model = model()
+encoder = Encoder()
+decoder = Decoder()
 
+encoder_optim = torch.optim.AdamW(encoder.parameters(),lr=0.0002,betas=(.9, .95), eps=1e-8)
+decoder_optim = torch.optim.AdamW(decoder.parameters(),lr=0.0002,betas=(.9, .95), eps=1e-8)
+
+loss = nn.MSELoss()
+count = 0
 for epoch in range(num_epochs):
     for image,labels in iter(train_dataLoader): #iterates through dataset
-
-        print(image.shape)
+        count+=1
+        image[image==image.min()]=-100 # I'm sure there is a better way to do this up above, I (Jack) will look into it
         #run through model
         #TODO build model and update code below
+        hidden = encoder(image)
+        recon = decoder(hidden) #try to reconstruct input 
+        recon_loss = loss(recon,image)
 
+        # Get input image and reconstruction
+        # if count%1000==0:
+        #     filename = f"comparison at {count}"
+        #     plt.figure()
+        #     plt.subplot(121)
+        #     plt.imshow(image[0][0].detach().numpy())
+        #     plt.title("Image")
+        #     plt.subplot(122)
+        #     plt.imshow(recon[0][0].detach().numpy())
+        #     plt.title("Reconstruction")
+        #     plt.text(0,0,f"recon loss: {recon_loss}")
+        #     plt.savefig(filename)
+        # print(recon_loss)
+        # plt.figure()
+        # plt.subplot(121)
+        # plt.imshow(image[0][0].detach().numpy())
+        # plt.subplot(122)
+        # plt.imshow(recon[0][0].detach().numpy())
+        # plt.show()
+        encoder_optim.zero_grad()
+        decoder_optim.zero_grad()
+        recon_loss.backward()
+        encoder_optim.step()
+        decoder_optim.step()
         ''' commented out until the models are built
         
         pred = model(data)  #predict next timestep - pass data through entire model
@@ -92,7 +128,7 @@ for epoch in range(num_epochs):
         loss.backward() #backprop
         optimizer.step() #update weights
         '''
-        
+
         
         
         
