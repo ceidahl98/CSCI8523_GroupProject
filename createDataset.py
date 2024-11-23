@@ -31,7 +31,7 @@ def process_file(file, csv_file_path, lat_window, lon_window, time_window, time_
 
     # Open the dataset and determine time range
     dataset = Dataset(file)
-    num_time = dataset.variables["sst"].shape[0] - time_window
+    num_time = dataset.variables["sst"].shape[0] - time_window - 1
     dataset.close()
 
     # Prepare arguments for multiprocessing
@@ -67,20 +67,25 @@ def main():
     start_time = time.time()
 
     # Parameters
-    files = ["data/1981_1985.nc", "data/1986_1990.nc",
-             "data/1991_1995.nc", "data/1996_2000.nc",
-             "data/2001_2005.nc", "data/2006_2010.nc",
-             "data/2011_2015.nc", "data/2016_2020.nc",
-             "data/2021_2024.nc"]
+    '''files = [r"D:\Datasets\data\1981_1985.nc", r"D:\Datasets\data\1986_1990.nc",
+             r"D:\Datasets\data\1991_1995.nc", r"D:\Datasets\data\1996_2000.nc",
+             r"D:\Datasets\data\2001-2005.nc", r"D:\Datasets\data\2006-2010.nc",
+             r"D:\Datasets\data\2011-2015.nc", r"D:\Datasets\data\2016-2020.nc",
+             r"D:\Datasets\data\2021-2024.nc"]'''
+
+    files = [r"D:\Datasets\data\2001-2005.nc", r"D:\Datasets\data\2006-2010.nc",
+             r"D:\Datasets\data\2011-2015.nc", r"D:\Datasets\data\2016-2020.nc",
+             r"D:\Datasets\data\2021-2024.nc"]
+
     csv_file_path = "data_points.csv"
     lat_window, lon_window = 16, 16
     time_window = 4
-    time_offset = 0  # Initialize time offset
+    time_offset = 7041  # Initialize time offset
 
     # Initialize CSV file with header
-    with open(csv_file_path, mode='w', newline='') as csv_file:
+    '''with open(csv_file_path, mode='a', newline='') as csv_file:
         writer = csv.writer(csv_file)
-        writer.writerow(["Time_Index", "Lat_Index", "Lon_Index"])  # Write header
+        writer.writerow(["Time_Index", "Lat_Index", "Lon_Index"])  # Write header'''
 
     # Process each file independently, updating the time_offset for each file
     for file in files:
