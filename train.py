@@ -8,8 +8,25 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from EncoderDecoder import autoEncoder
 from transformer import GPT, GPTConfig
+import csv
+#max = 38.58
+#min = -1.8
+#mean = .38
+#std = .332
+torch.manual_seed(42) #makes training reproducible
+device = "cpu"
+if torch.cuda.is_available():
+    device = "cuda"
 
-torch.manual_seed(0) #makes training reproducible
+def save_model(auto_encoder, transformer_model, optimizer, epoch, loss, path):
+    torch.save({
+        'epoch': epoch,
+        'auto_encoder_state_dict': auto_encoder.state_dict(),
+        'transformer_model_state_dict': transformer_model.state_dict(),
+        'optimizer_state_dict': optimizer.state_dict(),
+        'loss': loss,
+    }, path)
+    print(f"Model saved to {path}")
 
 def normalize(x):
     max = 38.58
@@ -25,7 +42,7 @@ def normalize_with_mask(tensor, mask):
     return tensor
 
 class SSTDataset(torch.utils.data.Dataset):  #dataset class
-    def __init__(self, data_point_csv, dataset,lon_window, lat_window,t_window, transform=None, target_transform=None):
+    def __init__(self, data_point_csv, dataset,lon_window, lat_window,t_window, transform=None, target_transform=None, offset=0):
         self.data = data_point_csv
 
         self.dataset = dataset
@@ -40,12 +57,13 @@ class SSTDataset(torch.utils.data.Dataset):  #dataset class
         return len(self.data)
 
     def __getitem__(self, idx):
+
         t = self.data.iloc[idx]['Time_Index']
 
         lat = self.data.iloc[idx]['Lat_Index']
 
         lon = self.data.iloc[idx]['Lon_Index']
-
+        print(self.dataset.shape)
         image = self.dataset[t:t+self.t_window,lat:lat+self.lat_window,lon:lon+self.lon_window]
         label = self.dataset[t+self.t_window+1,lat:lat+self.lat_window,lon:lon+self.lon_window]
 
@@ -57,10 +75,11 @@ class SSTDataset(torch.utils.data.Dataset):  #dataset class
 
         image = normalize_with_mask(image,ocean_mask)
         label = normalize_with_mask(label,labels_mask)
-        lats = torch.tensor(self.data.iloc[idx]['Lat_Index']).repeat(4)
+        print(self.data.iloc[idx],"TEST")
+        lats = torch.tensor(lat).repeat(4)
 
-        lons = torch.tensor(self.data.iloc[idx]['Lon_Index']).repeat(4)
-        times = torch.tensor(self.data.iloc[idx]['Time_Index']).repeat(4)
+        lons = torch.tensor(lon).repeat(4)
+        times = torch.tensor(t).repeat(4)
         if self.transform:
             image = self.transform(image).permute(1,0,2).unsqueeze(0)
         if self.target_transform:
@@ -92,25 +111,25 @@ batch_size = 8
 num_epochs = 10000
 
 
-train_dataset = MFDataset(files).variables['sst']
+dataset = MFDataset(files).variables['sst']
 
 data_points = './data_points.csv'
-csv = pd.read_csv(data_points)
-total_len = int(csv.shape[0])
-train_len = int(total_len*.001/40)
-print(train_len)
-val_len = int(total_len*.1/40)
-test_len = total_len-train_len-val_len
-train_csv = csv.iloc[0:train_len,:]
-val_csv = csv.iloc[train_len:train_len+val_len,:]
-test_csv = csv.iloc[:-test_len,:]
+csv_ = pd.read_csv(data_points)
+total_len = int(csv_.shape[0])
+train_len = int(total_len*38/40)
 
-train_dataset = SSTDataset(train_csv,train_dataset,lon_window,lat_window,t_window,transform=transform,target_transform=transform)
-val_dataset = SSTDataset(val_csv,train_dataset,lon_window,lat_window,t_window,transform=transform,target_transform=transform)
-test_dataset = SSTDataset(test_csv,train_dataset,lon_window,lat_window,t_window,transform=transform,target_transform=transform)
-train_dataLoader = DataLoader(train_dataset,batch_size=batch_size,shuffle=True)
-val_dataLoader = DataLoader(val_dataset,batch_size=batch_size,shuffle=False)
-test_dataLoader = DataLoader(test_dataset,batch_size=batch_size,shuffle=False)
+val_len = int(total_len*1/40)
+test_len = total_len-train_len-val_len
+train_csv = csv_.iloc[0:train_len,:]
+val_csv = csv_.iloc[train_len+1:train_len+val_len,:]
+test_csv = csv_.iloc[:-test_len,:]
+
+train_dataset = SSTDataset(train_csv,dataset,lon_window,lat_window,t_window,transform=transform,target_transform=transform)
+val_dataset = SSTDataset(val_csv,dataset,lon_window,lat_window,t_window,transform=transform,target_transform=transform)
+test_dataset = SSTDataset(test_csv,dataset,lon_window,lat_window,t_window,transform=transform,target_transform=transform)
+train_dataLoader = DataLoader(train_dataset,batch_size=batch_size,shuffle=True,num_workers=8,pin_memory=True)
+val_dataLoader = DataLoader(val_dataset,batch_size=batch_size,shuffle=False,num_workers=8,pin_memory=True)
+test_dataLoader = DataLoader(test_dataset,batch_size=batch_size,shuffle=False,num_workers=8,pin_memory=True)
 
 #TODO add masking so we arent sampling over land
 
@@ -119,110 +138,160 @@ test_dataLoader = DataLoader(test_dataset,batch_size=batch_size,shuffle=False)
 in_channels = 1
 embedding_dim=512
 
-auto_encoder = autoEncoder(in_channels,embedding_dim)
-transformer_model = GPT(GPTConfig,2048)
+auto_encoder = autoEncoder(in_channels,embedding_dim).to(device)
+transformer_model = GPT(GPTConfig,2048).to(device)
 optim = torch.optim.AdamW(list(auto_encoder.parameters())+list(transformer_model.parameters()),lr=0.0002,betas=(.9, .95), eps=1e-8)
 
 l_pred=1
 l_recon=1
-
+model_save_iter = 0
 loss_fn = nn.MSELoss()
 count = 0
-for epoch in range(num_epochs):
-    for image,labels, lats,lons,times in iter(train_dataLoader): #iterates through dataset
-        optim.zero_grad()
-        print(lats.shape)
-        count+=1
+checkpoint_path = './models/checkpoint.pt'
+epoch_save_path = './models/'
+csv_file_path = './models/loss_csv.csv'
+with open(csv_file_path, mode='w', newline='') as csv_file:
+    writer = csv.writer(csv_file)
+    writer.writerow(["Epoch", "Val_Loss", "Test_Loss"])
 
 
-        #plt.imshow(image[0,0,0,:,:], cmap='viridis', aspect='auto', vmin=0, vmax=1)
-
-        #plt.show()
-        #run through model
-        #TODO build model and update code below
-
-        hidden = auto_encoder.encode(image) #(B,channels,time,features)
-        recon = auto_encoder.decode(hidden)
-        B, C, D, H, W = hidden.shape
-
-        hidden = hidden.permute(0,2,3,4,1).flatten(start_dim=2)
-
-        hidden = transformer_model(hidden,lats,lons)[:,-1,:].unsqueeze(1).view(B,C,1,H,W) #predict next state (B,C,1,features)
-        hidden = hidden.clone()
-
-        pred = auto_encoder.decode(hidden)
-        pred_loss = loss_fn(pred, labels)
+    for epoch in range(num_epochs):
+        for image,labels, lats,lons,times in iter(train_dataLoader): #iterates through dataset
+            optim.zero_grad()
+            print(lats.shape)
+            count+=1
 
 
-        recon_loss = loss_fn(recon,image)
-        loss = l_pred * pred_loss + l_recon * recon_loss
-        #loss = recon_loss
+            #plt.imshow(image[0,0,0,:,:], cmap='viridis', aspect='auto', vmin=0, vmax=1)
 
-        print(recon_loss)
-        loss.backward()
-        optim.step()
-        test = image
-        truth = labels
-        '''for name, param in transformer_model.named_parameters():
-                    if param.grad is not None:
-                        print(f"Layer: {name}, Gradient Mean: {param.grad.mean().item()}, Std: {param.grad.std().item()}")
-                    else:
-                        print(f"Layer: {name} has no gradient!")'''
+            #plt.show()
+            #run through model
+            #TODO build model and update code below
+
+            hidden = auto_encoder.encode(image) #(B,channels,time,features)
+            recon = auto_encoder.decode(hidden)
+            B, C, D, H, W = hidden.shape
+
+            hidden = hidden.permute(0,2,3,4,1).flatten(start_dim=2)
+
+            hidden = transformer_model(hidden,lats,lons)[:,-1,:].unsqueeze(1).view(B,C,1,H,W) #predict next state (B,C,1,features)
 
 
-    #for image,labels in iter(val_dataset):
-    with torch.no_grad():
-        recon = auto_encoder(test)
-        '''hidden = auto_encoder.encode(test)
-        B, C, D, H, W = hidden.shape
+            pred = auto_encoder.decode(hidden)
+            pred_loss = loss_fn(pred, labels)
 
-        hidden = hidden.permute(0, 2, 3, 4, 1).flatten(start_dim=2)
 
-        hidden = transformer_model(hidden)[:, -1, :].unsqueeze(1).view(B, C, 1, H, W)
+            recon_loss = loss_fn(recon,image)
+            loss = l_pred * pred_loss + l_recon * recon_loss
+            #loss = recon_loss
 
-        pred = auto_encoder.decode(hidden)'''
 
-    if recon_loss<.01:
-        plt.figure()
-        plt.subplot(121)
-        plt.imshow(test[0,0,0,:,:].detach().numpy())
-        plt.title("Image")
-        plt.subplot(122)
-        plt.imshow(recon[0,0,0,:,:].detach().numpy())
-        plt.title("Reconstruction")
-        plt.show()
-        '''plt.figure()
-        plt.subplot(121)
-        plt.imshow(labels[0, 0, 0, :, :].detach().numpy())
-        plt.title("label")
-        plt.subplot(122)
-        plt.imshow(pred[0, 0, 0, :, :].detach().numpy())
-        plt.title("prediction")
-        plt.show()'''
-        
-        
-        
-        
+            loss.backward()
+            optim.step()
+            model_save_iter+=1
+            if model_save_iter % 10 ==0:
+                save_model(auto_encoder, transformer_model, optim, epoch, loss, checkpoint_path)
+            break
 
-# Get input image and reconstruction
-        # if count%1000==0:
-        #     filename = f"comparison at {count}"
-        #     plt.figure()
-        #     plt.subplot(121)
-        #     plt.imshow(image[0][0].detach().numpy())
-        #     plt.title("Image")
-        #     plt.subplot(122)
-        #     plt.imshow(recon[0][0].detach().numpy())
-        #     plt.title("Reconstruction")
-        #     plt.text(0,0,f"recon loss: {recon_loss}")
-        #     plt.savefig(filename)
-        # print(recon_loss)
-        # plt.figure()
-        # plt.subplot(121)
-        # plt.imshow(image[0][0].detach().numpy())
-        # plt.subplot(122)
-        # plt.imshow(recon[0][0].detach().numpy())
-        # plt.show()
+        with torch.no_grad():
+            val_loss =0
+            for image, labels, lats, lons, times in iter(val_dataLoader):
+
+                hidden = auto_encoder.encode(image)  # (B,channels,time,features)
+                recon = auto_encoder.decode(hidden)
+                B, C, D, H, W = hidden.shape
+
+                hidden = hidden.permute(0, 2, 3, 4, 1).flatten(start_dim=2)
+
+                hidden = transformer_model(hidden, lats, lons)[:, -1, :].unsqueeze(1).view(B, C, 1, H,
+                                                                                           W)  # predict next state (B,C,1,features)
+
+                pred = auto_encoder.decode(hidden)
+                pred_loss = loss_fn(pred, labels)
+
+                recon_loss = loss_fn(recon, image)
+                loss += l_pred * pred_loss + l_recon * recon_loss
+
+
+                break
+            test_loss=0
+            for image, labels, lats, lons, times in iter(test_dataLoader):
+                hidden = auto_encoder.encode(image)  # (B,channels,time,features)
+                recon = auto_encoder.decode(hidden)
+                B, C, D, H, W = hidden.shape
+
+                hidden = hidden.permute(0, 2, 3, 4, 1).flatten(start_dim=2)
+
+                hidden = transformer_model(hidden, lats, lons)[:, -1, :].unsqueeze(1).view(B, C, 1, H,
+                                                                                           W)  # predict next state (B,C,1,features)
+
+                pred = auto_encoder.decode(hidden)
+                pred_loss = loss_fn(pred, labels)
+
+                recon_loss = loss_fn(recon, image)
+                loss += l_pred * pred_loss + l_recon * recon_loss
+
+                break
+
+            if epoch % 5 ==0:
+                test_loss= test_loss/test_len
+                val_loss = val_loss/val_len
+                save_model(auto_encoder, transformer_model, optim, epoch, loss, epoch_save_path+'Epoch_'+str(epoch)+'.pt')
+                writer.writerow((epoch,val_loss,test_loss))
+
+            #for image,labels in iter(val_dataset):
+        '''with torch.no_grad():
+            recon = auto_encoder(test)
+            hidden = auto_encoder.encode(test)
+            B, C, D, H, W = hidden.shape
+    
+            hidden = hidden.permute(0, 2, 3, 4, 1).flatten(start_dim=2)
+    
+            hidden = transformer_model(hidden)[:, -1, :].unsqueeze(1).view(B, C, 1, H, W)
+    
+            pred = auto_encoder.decode(hidden)'''
+
+        '''if recon_loss<.01:
+            plt.figure()
+            plt.subplot(121)
+            plt.imshow(test[0,0,0,:,:].detach().numpy())
+            plt.title("Image")
+            plt.subplot(122)
+            plt.imshow(recon[0,0,0,:,:].detach().numpy())
+            plt.title("Reconstruction")
+            plt.show()
+            plt.figure()
+            plt.subplot(121)
+            plt.imshow(labels[0, 0, 0, :, :].detach().numpy())
+            plt.title("label")
+            plt.subplot(122)
+            plt.imshow(pred[0, 0, 0, :, :].detach().numpy())
+            plt.title("prediction")
+            plt.show()'''
+
+
+
+
+
+    # Get input image and reconstruction
+            # if count%1000==0:
+            #     filename = f"comparison at {count}"
+            #     plt.figure()
+            #     plt.subplot(121)
+            #     plt.imshow(image[0][0].detach().numpy())
+            #     plt.title("Image")
+            #     plt.subplot(122)
+            #     plt.imshow(recon[0][0].detach().numpy())
+            #     plt.title("Reconstruction")
+            #     plt.text(0,0,f"recon loss: {recon_loss}")
+            #     plt.savefig(filename)
+            # print(recon_loss)
+            # plt.figure()
+            # plt.subplot(121)
+            # plt.imshow(image[0][0].detach().numpy())
+            # plt.subplot(122)
+            # plt.imshow(recon[0][0].detach().numpy())
+            # plt.show()
 
 
 

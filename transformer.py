@@ -133,6 +133,9 @@ class GPT(nn.Module):
 
         B, T, E = indicies.shape
 
+        lats=lats.unsqueeze(1).repeat((1,T))
+        lons=lons.unsqueeze(1).repeat((1,T))
+
         assert T <= self.config.block_size, f"seq_length greater than block_size"
 
         pos = torch.arange(0, T, dtype=torch.long, device=indicies.device)
@@ -140,14 +143,14 @@ class GPT(nn.Module):
         tok_emb = self.transformer.wte(indicies)
         lat_emb = self.transformer.late(lats)
         lon_emb = self.transformer.lote(lons)
-        print(lat_emb.shape)
+
         tok_emb = self.activation(tok_emb)
 
         # act_emb = self.transformer.ate(actions)
 
         x = tok_emb
         # x = self.d1(x)
-        print(x.shape)
+
         x = x + pos_emb + lat_emb + lon_emb
 
         for block in self.transformer.h:
