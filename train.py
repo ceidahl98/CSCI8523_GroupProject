@@ -70,32 +70,7 @@ batch_size = 32
 num_epochs = 1
 
 train_dataset = MFDataset(files).variables['sst']
-
-# print(train_dataset.shape)
-# index = 0
-# running_sum = np.zeros(366*720*1440)
-# leap_day_data = np.zeros(720*1440)
-# years=0
-# for year in range(1986,2024):
-#     print(year)
-#     years+=1
-#     if year in leap_years:
-#         year_data = train_dataset[index:index+366]
-#         leapday = year_data[59]
-#         leap_day_data+=leapday.flatten()
-#         print(leapday.shape)
-#         running_sum += year_data.flatten()
-#         index+=366
-#     else:
-#         year_data = train_dataset[index:index+365]
-#         year_data = np.insert(year_data,59,np.nan,axis=0)
-#         running_sum +=year_data.flatten()
-#         index+=365
-# running_sum = running_sum/years
-# running_sum = running_sum.reshape((366,720,1440))
-# running_sum[59]=(leap_day_data/len(leap_years)).reshape((720,1440))
-# averages_file = "historical_averages"
-# np.save(averages_file,running_sum)
+historical_averages = np.load("historical_averages.npy")         #Reads in historical averages using data from 1986-2023, dimension is 366x720x1440
 
 data_points = './data_points.csv'
 
