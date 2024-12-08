@@ -117,7 +117,7 @@ lat_window = 16
 batch_size = 32
 num_epochs = 1
 
-train_dataset = MFDataset(files).variables['sst']
+dataset = MFDataset(files).variables['sst']
 historical_averages = np.load("historical_averages.npy")         #Reads in historical averages using data from 1986-2023, dimension is 366x720x1440
 
 data_points = './data_points.csv'
