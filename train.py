@@ -43,27 +43,64 @@ class SSTDataset(torch.utils.data.Dataset):  #dataset class
 
 
 
-files = ["data/1981_1985.nc", "data/1986_1990.nc",
+files = ["data/1981_1985.nc","data/1986_1990.nc",
              "data/1991_1995.nc", "data/1996_2000.nc",
              "data/2001_2005.nc", "data/2006_2010.nc",
              "data/2011_2015.nc", "data/2016_2020.nc",
              "data/2021_2024.nc"]
-# files = ["data/1981_1985.nc", "data/1986_1990.nc"]
+# files = ["data/1986_1990.nc"]
+
+# leap_years = np.arange(1988,2021,4)
+
+
 #TODO add validation/test sets
 
+if torch.cuda.is_available():
+    DEVICE=torch.device('cuda:0')
+elif torch.mps.is_available():
+    DEVICE=torch.device("mps")
+else:
+    DEVICE=torch.device("cpu")
+print(DEVICE)
 
 t_window = 4
 lon_window = 16
 lat_window = 16
-batch_size = 16
+batch_size = 32
 num_epochs = 1
 
-
 train_dataset = MFDataset(files).variables['sst']
+
+# print(train_dataset.shape)
+# index = 0
+# running_sum = np.zeros(366*720*1440)
+# leap_day_data = np.zeros(720*1440)
+# years=0
+# for year in range(1986,2024):
+#     print(year)
+#     years+=1
+#     if year in leap_years:
+#         year_data = train_dataset[index:index+366]
+#         leapday = year_data[59]
+#         leap_day_data+=leapday.flatten()
+#         print(leapday.shape)
+#         running_sum += year_data.flatten()
+#         index+=366
+#     else:
+#         year_data = train_dataset[index:index+365]
+#         year_data = np.insert(year_data,59,np.nan,axis=0)
+#         running_sum +=year_data.flatten()
+#         index+=365
+# running_sum = running_sum/years
+# running_sum = running_sum.reshape((366,720,1440))
+# running_sum[59]=(leap_day_data/len(leap_years)).reshape((720,1440))
+# averages_file = "historical_averages"
+# np.save(averages_file,running_sum)
 
 data_points = './data_points.csv'
 
 dataset = SSTDataset(data_points,train_dataset,lon_window,lat_window,t_window)
+print(dataset.data.min())
 
 train_dataLoader = DataLoader(dataset,batch_size=batch_size,shuffle=True)
 
@@ -72,7 +109,9 @@ train_dataLoader = DataLoader(dataset,batch_size=batch_size,shuffle=True)
 #optimizer = torch.optim.AdamW(model.parameters(),lr=0.0002,betas=(.9, .95), eps=1e-8)
 #model = model()
 encoder = Encoder()
+encoder.to(DEVICE)
 decoder = Decoder()
+decoder.to(DEVICE)
 
 encoder_optim = torch.optim.AdamW(encoder.parameters(),lr=0.0002,betas=(.9, .95), eps=1e-8)
 decoder_optim = torch.optim.AdamW(decoder.parameters(),lr=0.0002,betas=(.9, .95), eps=1e-8)
@@ -82,26 +121,28 @@ count = 0
 for epoch in range(num_epochs):
     for image,labels in iter(train_dataLoader): #iterates through dataset
         count+=1
-        image[image==image.min()]=-100 # I'm sure there is a better way to do this up above, I (Jack) will look into it
+        image[image==image.min()]=-10 # I'm sure there is a better way to do this up above, I (Jack) will look into it
         #run through model
         #TODO build model and update code below
+        image = image.to(DEVICE)
         hidden = encoder(image)
         recon = decoder(hidden) #try to reconstruct input 
+        
         recon_loss = loss(recon,image)
 
         # Get input image and reconstruction
-        # if count%1000==0:
-        #     filename = f"comparison at {count}"
-        #     plt.figure()
-        #     plt.subplot(121)
-        #     plt.imshow(image[0][0].detach().numpy())
-        #     plt.title("Image")
-        #     plt.subplot(122)
-        #     plt.imshow(recon[0][0].detach().numpy())
-        #     plt.title("Reconstruction")
-        #     plt.text(0,0,f"recon loss: {recon_loss}")
-        #     plt.savefig(filename)
-        # print(recon_loss)
+        if count%250==0:
+            filename = f"comparison at {count}"
+            plt.figure()
+            plt.subplot(121)
+            plt.imshow(image[0][0].cpu().detach().numpy())
+            plt.title("Image")
+            plt.subplot(122)
+            plt.imshow(recon[0][0].cpu().detach().numpy())
+            plt.title("Reconstruction")
+            plt.text(0,0,f"recon loss: {recon_loss}")
+            plt.savefig(filename)
+        print(recon_loss)
         # plt.figure()
         # plt.subplot(121)
         # plt.imshow(image[0][0].detach().numpy())
