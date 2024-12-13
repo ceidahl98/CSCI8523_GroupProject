@@ -59,7 +59,9 @@ class SSTDataset(torch.utils.data.Dataset):  #dataset class
         lats = torch.tensor(lat).repeat(4)
 
         lons = torch.tensor(lon).repeat(4)
-        times = torch.tensor(t).repeat(4)
+
+        # times = torch.tensor(t).repeat(4) #This shouldn't be returning the same timestep repeatedly should it? Should be four different days that data came from?
+        times = torch.arange(t,t+self.t_window)      # I believe this should be the correct time output
         if self.transform:
             image = self.transform(image).permute(1,0,2).unsqueeze(0)
         if self.target_transform:
@@ -142,7 +144,7 @@ def main_worker(gpu, ngpus_per_node, args):
     test_len = total_len - train_len - val_len
     train_csv = csv_.iloc[0:train_len, :]
     val_csv = csv_.iloc[train_len+1:train_len+val_len, :]
-    test_csv = csv_.iloc[:-test_len, :]
+    test_csv = csv_.iloc[-test_len:, :]                     #Was getting 1:n-test_len, changed to get values n-test_len:n
 
     train_dataset = SSTDataset(train_csv, dataset, lon_window, lat_window, t_window,
                                transform=transform, target_transform=transform)
