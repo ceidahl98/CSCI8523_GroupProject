@@ -10,6 +10,10 @@ files = [r"data\1981_1985.nc", r"data\1986_1990.nc",
              r"data\2011_2015.nc", r"data\2016_2020.nc",
              r"data\2021_2024.nc"]
 file = r"data\2011_2015.nc"
+data = None
+with open("historical_averages.npy","rb") as fp:
+    data = np.load(fp)
+
 
 # 640        256
 dataset = Dataset(file).variables['sst']
@@ -19,7 +23,7 @@ transform = transforms.Compose([
         transforms.Normalize(0.38, 0.332)
     ])
 
-HA = HistoricalAverages(dataset,t_window=1,lat_window=16,lon_window=16,transform=transform) 
+HA = HistoricalAverages(data,t_window=1,lat_window=16,lon_window=16,transform=transform) 
 lats = [416, 416, 416, 416]
 lons = [ 896,  896,  896,  896]
 times = [4,5,6,7]
