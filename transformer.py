@@ -87,7 +87,7 @@ class Block(nn.Module):
 class GPTConfig:
     block_size: int = 4
     vocab_size: int = 2048
-    n_layer: int = 4
+    n_layer: int = 8
     n_head: int = 8
     n_embd: int = 512
     dropout: float = 0.1
@@ -141,9 +141,11 @@ class GPT(nn.Module):
         pos = torch.arange(0, T, dtype=torch.long, device=indicies.device)
         pos_emb = self.transformer.wpe(pos)
         tok_emb = self.transformer.wte(indicies)
+        print(tok_emb.shape)
         lat_emb = self.transformer.late(lats)
+        print(lat_emb.shape)
         lon_emb = self.transformer.lote(lons)
-
+        print(lon_emb.shape)
         tok_emb = self.activation(tok_emb)
 
         # act_emb = self.transformer.ate(actions)

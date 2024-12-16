@@ -95,18 +95,17 @@ transform = transforms.Compose(
 
 
 
-files = [r"D:\Datasets\data\1981_1985.nc", r"D:\Datasets\data\1986_1990.nc",
-             r"D:\Datasets\data\1991_1995.nc", r"D:\Datasets\data\1996_2000.nc",
-             r"D:\Datasets\data\2001-2005.nc", r"D:\Datasets\data\2006-2010.nc",
-             r"D:\Datasets\data\2011-2015.nc", r"D:\Datasets\data\2016-2020.nc",
-             r"D:\Datasets\data\2021-2024.nc"]
+files = [r".\data\1981_1985.nc", r".\data\1986_1990.nc",
+             r".\data\1991_1995.nc", r".\data\1996_2000.nc",
+             r".\data\2001-2005.nc", r".\data\2006-2010.nc",
+             r".\data\2011-2015.nc", r".\data\2016-2020.nc",
+             r".\data\2021-2024.nc"]
 # files = [r"D:\Datasets\data\1981_1985.nc", r"D:\Datasets\data\1986_1990.nc"]
 #TODO add validation/test sets
 
 if torch.cuda.is_available():
     DEVICE=torch.device('cuda:0')
-elif torch.mps.is_available():
-    DEVICE=torch.device("mps")
+
 else:
     DEVICE=torch.device("cpu")
 print(DEVICE)
@@ -258,15 +257,15 @@ with open(csv_file_path, mode='w', newline='') as csv_file:
     
             pred = auto_encoder.decode(hidden)'''
 
-        '''if recon_loss<.01:
-            plt.figure()
-            plt.subplot(121)
-            plt.imshow(test[0,0,0,:,:].detach().numpy())
-            plt.title("Image")
-            plt.subplot(122)
-            plt.imshow(recon[0,0,0,:,:].detach().numpy())
-            plt.title("Reconstruction")
-            plt.show()
+        if recon_loss<.01:
+            # plt.figure()
+            # plt.subplot(121)
+            # plt.imshow(test[0,0,0,:,:].detach().numpy())
+            # plt.title("Image")
+            # plt.subplot(122)
+            # plt.imshow(recon[0,0,0,:,:].detach().numpy())
+            # plt.title("Reconstruction")
+            # plt.show()
             plt.figure()
             plt.subplot(121)
             plt.imshow(labels[0, 0, 0, :, :].detach().numpy())
@@ -274,7 +273,7 @@ with open(csv_file_path, mode='w', newline='') as csv_file:
             plt.subplot(122)
             plt.imshow(pred[0, 0, 0, :, :].detach().numpy())
             plt.title("prediction")
-            plt.show()'''
+            plt.show()
 
 
 
