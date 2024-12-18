@@ -30,15 +30,11 @@ def worker_init_fn(worker_id):
         GLOBAL_DATASET = MFDataset(files).variables['sst']
 
 
-def normalize_with_mask(tensor, mask):
-    #tensor_min = tensor[mask].min()
-    #tensor_max = tensor[mask].max()
-    #print(tensor_max,"MAX")
-    #print(tensor_min,"min")
-
-    tensor[mask] = (tensor[mask] - (-1.8)) / (38.58 - (-1.8))
-    tensor[~mask] = -.1
-    return tensor
+def normalize_with_mask(tensor, mask,min_val=-1.8,max_val=38.58):
+    normalized_tensor = tensor.copy()
+    normalized_tensor[mask] = (normalized_tensor[mask] - min_val) / (max_val - min_val)
+    normalized_tensor[~mask] = -0.1
+    return normalized_tensor
 
 class SSTDataset(torch.utils.data.Dataset):
     def __init__(self, data_point_csv, lon_window, lat_window, t_window, transform=None, target_transform=None):
@@ -63,7 +59,7 @@ class SSTDataset(torch.utils.data.Dataset):
         lon = self.data.iloc[idx]['Lon_Index']
 
         image = GLOBAL_DATASET[t:t+self.t_window, lat:lat+self.lat_window, lon:lon+self.lon_window]
-        label = GLOBAL_DATASET[t+self.t_window+1, lat:lat+self.lat_window, lon:lon+self.lon_window]
+        label = GLOBAL_DATASET[t+self.t_window:t+self.t_window+4, lat:lat+self.lat_window, lon:lon+self.lon_window]
 
 
 
@@ -83,7 +79,7 @@ class SSTDataset(torch.utils.data.Dataset):
         if self.transform:
             image = self.transform(image).permute(1,0,2).unsqueeze(0)
         if self.target_transform:
-            label = self.target_transform(label).unsqueeze(0)
+            label = self.target_transform(label).permute(1,0,2).unsqueeze(0)
         return image, label, lats,lons,times
 
 
@@ -189,6 +185,9 @@ def main_worker(gpu, ngpus_per_node, args):
 
     auto_encoder = autoEncoder(in_channels, embedding_dim).to(device)
     transformer_model = GPT(GPTConfig, 2048).to(device)
+    state_dict = torch.load("./models/Epoch_15.pt",map_location=device)
+    auto_encoder.load_state_dict(state_dict['auto_encoder_state_dict'])
+    transformer_model.load_state_dict(state_dict['transformer_model_state_dict'])
     torch.compile(auto_encoder)
     torch.compile(transformer_model)
     # Wrap models with DistributedDataParallel
@@ -205,9 +204,9 @@ def main_worker(gpu, ngpus_per_node, args):
     l_recon = 1
     model_save_iter = 0
     count = 0
-    checkpoint_path = './models/checkpoint.pt'
-    epoch_save_path = './models/'
-    csv_file_path = './models/loss_csv.csv'
+    checkpoint_path = './models_scheduled_sampling/checkpoint.pt'
+    epoch_save_path = './models_scheduled_sampling/'
+    csv_file_path = './models_scheduled_sampling/loss_csv.csv'
     total_batches_train = len(train_loader)
     total_batches_val = len(val_loader)
     total_batches_test = len(test_loader)
@@ -217,12 +216,18 @@ def main_worker(gpu, ngpus_per_node, args):
             writer = csv.writer(csv_file)
             writer.writerow(["Epoch", "Val_Loss", "Test_Loss"])
     print("training")
+
+    scheduled_sampling_prob = 0
+    scheduled_sampling_increase = 0.01  # Increment per epoch
+    max_scheduled_sampling_prob = 0.5  # Maximum probability
+
     for epoch in range(num_epochs):
         train_sampler.set_epoch(epoch)  # Shuffle data differently every epoch
         #if dist.is_initialized():
          #   dist.barrier()
         auto_encoder.train()
         transformer_model.train()
+        scheduled_sampling_prob = min(max_scheduled_sampling_prob,scheduled_sampling_prob + scheduled_sampling_increase)
         progress_bar = tqdm(iter(train_loader), total=total_batches_train, desc=f"Training Epoch [{epoch + 1}/{num_epochs}]",leave=False)
         for image, labels, lats, lons, times in progress_bar:
             image = image.to(device, non_blocking=True)
@@ -234,17 +239,44 @@ def main_worker(gpu, ngpus_per_node, args):
             count += 1
 
             # Forward pass
-            hidden = auto_encoder.module.encode(image)  # (B, channels, time, features)
-            recon = auto_encoder.module.decode(hidden)
-            B, C, D, H, W = hidden.shape
+            latents = auto_encoder.module.encode(image)  # (B, channels, time, features)
+            recon = auto_encoder.module.decode(latents)
+            B, C, D, H, W = latents.shape
 
-            hidden = hidden.permute(0, 2, 3, 4, 1).flatten(start_dim=2)
-            hidden = transformer_model(hidden, lats, lons)[:, -1, :].unsqueeze(1).view(B, C, 1, H, W)
+            latents = latents.permute(0, 2, 3, 4, 1).flatten(start_dim=2)
+
+            # Initialize for autoregressive latent generation
+            pred_latents = []
+            current_latents = latents  # Start with encoded input sequence
+
+            for t in range(D):  # Predict horizon steps autoregressively
+                pred_next = transformer_model(current_latents, lats, lons)[:, -1, :]  # Predict next latent
+                pred_latents.append(pred_next)
+
+                # Scheduled sampling: mix ground truth and predictions
+                use_pred = torch.rand(B, device=device) < scheduled_sampling_prob
+                # print(use_pred.shape,"USE")
+                # print(pred_next.shape,"PRED")
+                # print(latents.shape,"LABELS")
+                next_latent = torch.where(
+                    use_pred.unsqueeze(-1),  # Use predicted latent if condition is true
+                    pred_next,  # Predicted latent
+                    latents[:, t, :].flatten(start_dim=1)  # Ground truth latent
+                )
+
+                # Update current latents for the next timestep
+                current_latents = torch.cat([current_latents, next_latent.unsqueeze(1)], dim=1)[:, -D:,
+                                  :]  # Keep context window
+
+            pred_latents = torch.stack(pred_latents,dim=1)
+
             with torch.no_grad():
-                labels = auto_encoder.module.encode(labels)
+                true_latents = auto_encoder.module.encode(labels)
 
             #pred = auto_encoder.module.decode(hidden)
-            pred_loss = loss_fn(hidden, labels)
+
+            true_latents = true_latents.permute(0,2,1,3,4).flatten(start_dim=2)
+            pred_loss = loss_fn(pred_latents, true_latents)
             recon_loss = loss_fn(recon, image)
             loss = l_pred * pred_loss + l_recon * recon_loss
             progress_bar.set_postfix(loss=loss.item())
@@ -276,16 +308,48 @@ def main_worker(gpu, ngpus_per_node, args):
                 lats = lats.to(device, non_blocking=True)
                 lons = lons.to(device, non_blocking=True)
 
-                hidden = auto_encoder.module.encode(image)
-                recon = auto_encoder.module.decode(hidden)
-                B, C, D, H, W = hidden.shape
+                optim.zero_grad()
+                count += 1
 
-                hidden = hidden.permute(0, 2, 3, 4, 1).flatten(start_dim=2)
-                hidden = transformer_model(hidden, lats, lons)[:, -1, :].unsqueeze(1).view(B, C, 1, H, W)
+                # Forward pass
+                latents = auto_encoder.module.encode(image)  # (B, channels, time, features)
+                recon = auto_encoder.module.decode(latents)
+                B, C, D, H, W = latents.shape
+
+                latents = latents.permute(0, 2, 3, 4, 1).flatten(start_dim=2)
+
+                # Initialize for autoregressive latent generation
+                pred_latents = []
+                current_latents = latents  # Start with encoded input sequence
+
+                for t in range(D):  # Predict horizon steps autoregressively
+                    pred_next = transformer_model(current_latents, lats, lons)[:, -1, :]  # Predict next latent
+                    pred_latents.append(pred_next)
+
+                    # Scheduled sampling: mix ground truth and predictions
+                    use_pred = torch.rand(B, device=device) < scheduled_sampling_prob
+                    # print(use_pred.shape,"USE")
+                    # print(pred_next.shape,"PRED")
+                    # print(latents.shape,"LABELS")
+                    next_latent = torch.where(
+                        use_pred.unsqueeze(-1),  # Use predicted latent if condition is true
+                        pred_next,  # Predicted latent
+                        latents[:, t, :].flatten(start_dim=1)  # Ground truth latent
+                    )
+
+                    # Update current latents for the next timestep
+                    current_latents = torch.cat([current_latents, next_latent.unsqueeze(1)], dim=1)[:, -D:,
+                                      :]  # Keep context window
+
+                pred_latents = torch.stack(pred_latents, dim=1)
+
                 with torch.no_grad():
-                    labels = auto_encoder.module.encode(labels)
-                #pred = auto_encoder.module.decode(hidden)
-                pred_loss = loss_fn(hidden, labels)
+                    true_latents = auto_encoder.module.encode(labels)
+
+                # pred = auto_encoder.module.decode(hidden)
+
+                true_latents = true_latents.permute(0, 2, 1, 3, 4).flatten(start_dim=2)
+                pred_loss = loss_fn(pred_latents, true_latents)
                 recon_loss = loss_fn(recon, image)
 
                 val_loss += l_pred * pred_loss.item() + l_recon * recon_loss.item()
@@ -301,16 +365,48 @@ def main_worker(gpu, ngpus_per_node, args):
                 lats = lats.to(device, non_blocking=True)
                 lons = lons.to(device, non_blocking=True)
 
-                hidden = auto_encoder.module.encode(image)
-                recon = auto_encoder.module.decode(hidden)
-                B, C, D, H, W = hidden.shape
+                optim.zero_grad()
+                count += 1
 
-                hidden = hidden.permute(0, 2, 3, 4, 1).flatten(start_dim=2)
-                hidden = transformer_model(hidden, lats, lons)[:, -1, :].unsqueeze(1).view(B, C, 1, H, W)
+                # Forward pass
+                latents = auto_encoder.module.encode(image)  # (B, channels, time, features)
+                recon = auto_encoder.module.decode(latents)
+                B, C, D, H, W = latents.shape
+
+                latents = latents.permute(0, 2, 3, 4, 1).flatten(start_dim=2)
+
+                # Initialize for autoregressive latent generation
+                pred_latents = []
+                current_latents = latents  # Start with encoded input sequence
+
+                for t in range(D):  # Predict horizon steps autoregressively
+                    pred_next = transformer_model(current_latents, lats, lons)[:, -1, :]  # Predict next latent
+                    pred_latents.append(pred_next)
+
+                    # Scheduled sampling: mix ground truth and predictions
+                    use_pred = torch.rand(B, device=device) < scheduled_sampling_prob
+                    # print(use_pred.shape,"USE")
+                    # print(pred_next.shape,"PRED")
+                    # print(latents.shape,"LABELS")
+                    next_latent = torch.where(
+                        use_pred.unsqueeze(-1),  # Use predicted latent if condition is true
+                        pred_next,  # Predicted latent
+                        latents[:, t, :].flatten(start_dim=1)  # Ground truth latent
+                    )
+
+                    # Update current latents for the next timestep
+                    current_latents = torch.cat([current_latents, next_latent.unsqueeze(1)], dim=1)[:, -D:,
+                                      :]  # Keep context window
+
+                pred_latents = torch.stack(pred_latents, dim=1)
+
                 with torch.no_grad():
-                    labels = auto_encoder.module.encode(labels)
-                #pred = auto_encoder.module.decode(hidden)
-                pred_loss = loss_fn(hidden, labels)
+                    true_latents = auto_encoder.module.encode(labels)
+
+                # pred = auto_encoder.module.decode(hidden)
+
+                true_latents = true_latents.permute(0, 2, 1, 3, 4).flatten(start_dim=2)
+                pred_loss = loss_fn(pred_latents, true_latents)
                 recon_loss = loss_fn(recon, image)
                 test_loss += l_pred * pred_loss.item() + l_recon * recon_loss.item()
                 progress_bar.set_postfix(loss=test_loss)
@@ -322,6 +418,7 @@ def main_worker(gpu, ngpus_per_node, args):
         # Save model and log losses every 5 epochs
         #if epoch % 5 == 0:
         save_model(auto_encoder, transformer_model, optim, epoch, loss.item(),
+
                    os.path.join(epoch_save_path, f'Epoch_{epoch}.pt'))
         with open(csv_file_path, mode='a', newline='') as csv_file:
             writer = csv.writer(csv_file)

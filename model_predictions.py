@@ -81,12 +81,12 @@ class SSTPredictor:
                 label = self.get_label(t + horizon, lat, lon)
                 pred, _ = self.predict(image, lats, lons, horizon, image_save=image_save)
                 loss = nn.functional.mse_loss(pred,label)
-
+                print(loss)
                 # Visualize
                 fig, axes = plt.subplots(1, 2, figsize=(10, 5))
                 axes[0].imshow(label[0,0,:,:].detach().cpu().numpy())
                 axes[0].set_title("Ground Truth")
-                axes[1].imshow(pred.squeeze(0).permute(1,2,0).detach().cpu().numpy())
+                axes[1].imshow(pred.squeeze(0).permute(2,1,0).detach().cpu().numpy())
                 axes[1].set_title("Prediction")
                 plt.show()
 
@@ -132,16 +132,16 @@ embedding_dim = 512
 auto_encoder = autoEncoder(in_channels, embedding_dim).to(device)
 transformer_model = GPT(GPTConfig, 2048).to(device)
 
-state_dict = torch.load("model/Epoch_15.pt",map_location=device)
+state_dict = torch.load("models_scheduled_sampling/Epoch_10.pt",map_location=device)
 auto_encoder.load_state_dict(state_dict['auto_encoder_state_dict'])
 transformer_model.load_state_dict((state_dict['transformer_model_state_dict']))
 auto_encoder.eval()
 transformer_model.eval()
 
-coords_list = [(424,720)] #change this to read from excel file, should be a list of tuples
+coords_list = [(464,1096)] #change this to read from excel file, should be a list of tuples
 
 
-horizon = 5
+horizon = 1
 
 
 files = [r".\data\1981_1985.nc", r".\data\1986_1990.nc",
@@ -157,12 +157,15 @@ t_window =4
 batch_size=16
 
 dataset = MFDataset(files).variables['sst'][-366:,:,:] #366 to match historical averages
-print(dataset.shape)
+lats =  MFDataset(files).variables['lat'][:]
+lons = MFDataset(files).variables['lon'][-1]
+print(lons)
+
 
 predictions = SSTPredictor(auto_encoder,transformer_model,dataset,transform)
-
-#predictions.visualize_reconstruction(0,424,720)
-
+#
+# #predictions.visualize_reconstruction(0,424,720)
+#
 predictions.evaluate(coords_list,horizon) #will alter this to output what we want to show after discussing
 
 
