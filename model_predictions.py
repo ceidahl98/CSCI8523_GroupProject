@@ -9,8 +9,12 @@ import pandas as pd
 from EncoderDecoder import autoEncoder
 from transformer import GPT, GPTConfig
 import csv
+from historical_averages import HistoricalAverages
 
-
+def RMSE(X,Y):
+    lat_window=X.shape[1]
+    lon_window=X.shape[2]
+    return np.sqrt(np.nansum((Y-X)**2,axis=(1,2))/(lat_window*lon_window))
 
 class SSTPredictor:
     def __init__(self, auto_encoder, transformer, dataset, transform, lat_window=16, lon_window=16, t_window=4, device="cpu"):
@@ -146,24 +150,68 @@ horizon = 5
 
 files = [r".\data\1981_1985.nc", r".\data\1986_1990.nc",
              r".\data\1991_1995.nc", r".\data\1996_2000.nc",
-             r".\data\2001-2005.nc", r".\data\2006-2010.nc",
-             r".\data\2011-2015.nc", r".\data\2016-2020.nc",
-             r".\data\2021-2024.nc"]
+             r".\data\2001_2005.nc", r".\data\2006_2010.nc",
+             r".\data\2011_2015.nc", r".\data\2016_2020.nc",
+             r".\data\2021_2024.nc"]
 
+averages = np.load("historical_averages.npy")
+averages[averages<-100] = np.nan
 
-lat_window = 16
-lon_window = 16
+lon=524
+lat=468
+lat_window = 48
+lon_window = 48
 t_window =4
 batch_size=16
 
 dataset = MFDataset(files).variables['sst'][-366:,:,:] #366 to match historical averages
-print(dataset.shape)
+
+plt.figure()
+plt.imshow(averages[0]-dataset[0])
+plt.show()
+
+
+
 
 predictions = SSTPredictor(auto_encoder,transformer_model,dataset,transform)
+HA_baseline = HistoricalAverages(averages,lat_window=lat_window,lon_window=lon_window,transform=transform)
+
+#Get nov 12 through end of year (50 days)
+averages1 = HA_baseline.get_historical_average_temps(np.arange(366-50,366),[lat],[lon])
+averages2 = HA_baseline.get_historical_average_temps(np.arange(366-50),[lat],[lon]) #Improve reading in coords_list for historical averages, add option to get as temperature?
+averages = np.concatenate([averages1,averages2])
+
+region_data = dataset[:,lat:lat+lat_window,lon:lon+lon_window]
+
+print(region_data.shape)
+print(region_data.min(),region_data.max())
+print(averages.shape)
+print(averages.min(),averages.max())
+plt.figure()
+plt.plot(np.nanmean(averages,axis=(1,2)),'g')
+plt.plot(np.mean(region_data,axis=(1,2)),'b')
+plt.show()
+
+rmse = RMSE(region_data,averages)
+
+plt.figure()
+plt.plot(rmse)
+plt.show()
+
+for i in range(averages.shape[0]):
+    plt.figure()
+    plt.imshow(region_data[i,:,:]-averages[i,:,:],cmap='bwr')
+    plt.show()
+    # plt.figure()
+    # plt.subplot(121)
+    # plt.imshow(region_data[i,:,:])
+    # plt.subplot(122)
+    # plt.imshow(averages[i,:,:])
+    # plt.show()
 
 #predictions.visualize_reconstruction(0,424,720)
 
-predictions.evaluate(coords_list,horizon) #will alter this to output what we want to show after discussing
+# predictions.evaluate(coords_list,horizon) #will alter this to output what we want to show after discussing
 
 
 
