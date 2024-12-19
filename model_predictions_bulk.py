@@ -49,9 +49,12 @@ class SSTPredictor:
         normalized_tensor[~mask] = -.1
         return normalized_tensor
 
-    def unnormalize_predictions(self, predictions, min_val=-1.8, max_val=38.58):
-        """Unnormalize predictions back to the original scale."""
-        return predictions * (max_val - min_val) + min_val
+    def unnormalize_with_mask(self, tensor, mask, min_val=-1.8, max_val=38.58):
+        """Unnormalize tensor back to the original scale, applying mask."""
+        unnormalized_tensor = tensor.copy()
+        unnormalized_tensor[mask] = unnormalized_tensor[mask] * (max_val - min_val) + min_val
+        unnormalized_tensor[~mask] = np.nan  # Set masked values to NaN
+        return unnormalized_tensor
 
     def convert_coordinates(self, lat, lon):
 
@@ -78,7 +81,7 @@ class SSTPredictor:
 
     def predict(self, image, lats, lons, horizon):
         """Generate predictions for the given horizon."""
-        print("lats: ",lats," lons: ", lons)
+        #print("lats: ",lats," lons: ", lons)
         image = image.unsqueeze(0)  # Add batch dimension
 
         z = self.auto_encoder.encode(image)
@@ -113,7 +116,7 @@ class SSTPredictor:
         return self.transform(image).permute(1, 0, 2).unsqueeze(0), torch.tensor(ocean_mask, dtype=torch.float32)
 
 
-    def calculate_rmse(self, coords_dict, horizon=1):
+    def calculate_rmse(self, coords_dict, horizons=[1,2,5,10]):
         """Calculate RMSE for regions with variable sizes and output pixel-wise error maps."""
         results = []
         region_sizes = {
@@ -124,107 +127,167 @@ class SSTPredictor:
             "Shallow Pacific": 32,
             "Deep Pacific": 32
         }
+        historicalAverages = np.load('./historical_averages.npy')
+        print(historicalAverages.shape,"HA")
 
-        for region, coords_list in coords_dict.items():
-            print(f"Processing region: {region}")
-            region_size = region_sizes[region]  # Get region size dynamically
-            error_map = np.zeros((region_size, region_size))
-            prediction_map = np.zeros((region_size, region_size))
-            ground_truth_map = np.zeros((region_size, region_size))
-            patch_size = 16  # Each patch size
-            patches_per_dim = region_size // patch_size
+        for horizon in horizons:
+            print(f"Processing horizon: {horizon}")
+            horizon_results = []
 
-            start_lat, start_lon = coords_list[0]  # Starting latitude and longitude
+            for region, coords_list in coords_dict.items():
+                print(f"Processing region: {region}")
+                region_size = region_sizes[region]  # Get region size dynamically
+                error_map = np.zeros((region_size, region_size))
+                per_error_map = np.zeros((region_size, region_size))
+                avg_error_map= np.zeros((region_size, region_size))
+                patch_avg_map = np.zeros((region_size, region_size))
+                prediction_map = np.zeros((region_size, region_size))
+                ground_truth_map = np.zeros((region_size, region_size))
+                ocean_mask_map = np.zeros((region_size, region_size))
+                patch_size = 16  # Each patch size
+                patches_per_dim = region_size // patch_size
 
-            for pi in range(patches_per_dim):
-                for pj in range(patches_per_dim):
-                    lat = int(start_lat - (patches_per_dim - 1 - pi) * patch_size)
-                    lon = int(start_lon + (pj * patch_size))
-                    patch_errors = np.zeros((patch_size, patch_size))
-                    patch_predictions = np.zeros((patch_size, patch_size))
-                    patch_mask_sum = np.zeros((patch_size, patch_size))
-                    patch_ground_truth = np.zeros((patch_size, patch_size))
+                start_lat, start_lon = coords_list[0]  # Starting latitude and longitude
+                current_ha = historicalAverages
+                print(current_ha.shape,"CURRENT")
+                for pi in range(patches_per_dim):
+                    for pj in range(patches_per_dim):
+                        lat = int(start_lat - (patches_per_dim - 1 - pi) * patch_size)
+                        lon = int(start_lon + (pj * patch_size))
+                        patch_errors = np.zeros((patch_size, patch_size))
+                        avg_patch_errors = np.zeros((patch_size, patch_size))
+                        per_patch_errors = np.zeros((patch_size, patch_size))
+                        patch_predictions = np.zeros((patch_size, patch_size))
+                        patch_mask_sum = np.zeros((patch_size, patch_size))
+                        patch_ground_truth = np.zeros((patch_size, patch_size))
+                        patch_avg = np.zeros((patch_size, patch_size))
+                        combined_mask = np.zeros((patch_size, patch_size))
 
-                    for t in range(self.dataset.shape[0] - horizon):
-                        patch, mask = self.get_patch(t, lat, lon)
-                        patch = patch.to(self.device)
-                        mask = mask.to(self.device)
-                        label, _ = self.get_patch(t + horizon, lat, lon)
-                        label = label[:,-1,:,:].to(self.device)
+                        for t in range(self.dataset.shape[0] - horizon):
+                            patch, mask = self.get_patch(t, lat, lon)
+                            patch = patch.to(self.device)
+                            mask = mask.to(self.device)
+                            label, _ = self.get_patch(t + horizon, lat, lon)
+                            label = label[:,-1,:,:].to(self.device)
+                            persistence, per_mask = self.get_patch(t,lat,lon)
+                            persistence = persistence[:,-1,:,:]
+                            per_mask = per_mask[-1,:,:]
+                            ha = current_ha[t,lat:lat+self.lat_window,lon:lon+self.lon_window]
 
-                        pred = self.predict(patch, torch.tensor(lat).view(1,).to(self.device), torch.tensor(lon).view(1,).to(self.device), horizon)
+                            ha_mask = ha != np.nan
+                            ha = torch.tensor(self.normalize_with_mask(ha,ha_mask),device=device)
+                            pred = self.predict(patch, torch.tensor(lat).view(1,).to(self.device), torch.tensor(lon).view(1,).to(self.device), horizon)
 
-                        mask = mask[-1,:,:]
-                        mse = self.pixelwise_mse_loss(pred, label, mask).squeeze().cpu().numpy()
-                        patch_errors += mse
-                        patch_predictions += pred.squeeze().cpu().numpy() * mask.squeeze().cpu().numpy()
-                        patch_mask_sum += mask.squeeze().cpu().numpy()
-                        patch_ground_truth += label.squeeze().cpu().numpy() * mask.squeeze().cpu().numpy()
-                    # Avoid division by zero
-                    patch_errors = np.divide(patch_errors, patch_mask_sum, where=patch_mask_sum != 0)
-                    patch_errors = np.sqrt(patch_errors)
-                    patch_predictions = np.divide(patch_predictions, patch_mask_sum, where=patch_mask_sum != 0)
-                    error_map[pi * patch_size:(pi + 1) * patch_size, pj * patch_size:(pj + 1) * patch_size] = patch_errors
-                    prediction_map[pi * patch_size:(pi + 1) * patch_size,pj * patch_size:(pj + 1) * patch_size] = patch_predictions
-                    ground_truth_map[pi * patch_size:(pi + 1) * patch_size,
-                    pj * patch_size:(pj + 1) * patch_size] = patch_ground_truth
+                            mask = mask[-1,:,:]
+                            mse = self.pixelwise_mse_loss(pred, label, mask).squeeze().cpu().numpy()
+                            per_mse = self.pixelwise_mse_loss(torch.tensor(persistence,device=device), label, mask).squeeze().cpu().numpy()
+                            avg_mse = self.pixelwise_mse_loss(torch.tensor(ha,device=device),label,mask).squeeze().cpu().numpy()
 
-            prediction_map = self.unnormalize_predictions(prediction_map)
-            ground_truth_map = self.unnormalize_predictions(ground_truth_map)
+                            patch_errors += mse
+                            avg_patch_errors+=avg_mse
+                            per_patch_errors+=per_mse
+                            patch_predictions += pred.squeeze().cpu().numpy().T * mask.squeeze().cpu().numpy()
 
+                            patch_mask_sum += mask.squeeze().cpu().numpy()
+                            patch_ground_truth += label.squeeze().cpu().numpy().T * mask.squeeze().cpu().numpy()
+                            combined_mask += mask.squeeze().cpu().numpy()
+                            patch_avg += ha.squeeze().cpu().numpy() *mask.squeeze().cpu().numpy()
+                        # Avoid division by zero
+                        patch_errors = np.divide(patch_errors, patch_mask_sum, where=patch_mask_sum != 0)
+                        patch_errors = np.sqrt(patch_errors)
+                        avg_patch_errors = np.divide(avg_patch_errors, patch_mask_sum, where=patch_mask_sum != 0)
+                        avg_patch_errors = np.sqrt(avg_patch_errors)
+                        per_patch_errors = np.divide(per_patch_errors, patch_mask_sum, where=patch_mask_sum != 0)
+                        per_patch_errors = np.sqrt(per_patch_errors)
+                        patch_predictions = np.divide(patch_predictions, patch_mask_sum, where=patch_mask_sum != 0)
+                        patch_ground_truth= np.divide(patch_ground_truth, patch_mask_sum, where=patch_mask_sum != 0)
+                        patch_avg = np.divide(patch_avg, patch_mask_sum, where=patch_mask_sum != 0)
+                        error_map[pi * patch_size:(pi + 1) * patch_size, pj * patch_size:(pj + 1) * patch_size] = patch_errors
+                        avg_error_map[pi * patch_size:(pi + 1) * patch_size,pj * patch_size:(pj + 1) * patch_size] = avg_patch_errors
+                        per_error_map[pi * patch_size:(pi + 1) * patch_size,pj * patch_size:(pj + 1) * patch_size] = per_patch_errors
+                        prediction_map[pi * patch_size:(pi + 1) * patch_size,pj * patch_size:(pj + 1) * patch_size] = patch_predictions
+                        ground_truth_map[pi * patch_size:(pi + 1) * patch_size,pj * patch_size:(pj + 1) * patch_size] = patch_ground_truth
+                        patch_avg_map[pi * patch_size:(pi + 1) * patch_size,pj * patch_size:(pj + 1) * patch_size] = patch_avg
+                        ocean_mask_map[pi * patch_size:(pi + 1) * patch_size, pj * patch_size:(pj + 1) * patch_size] = combined_mask
 
-            ocean_mask = error_map > 0
-            interpolated_prediction_map = interpolate_map(
-                prediction_map, ocean_mask, region_size, interpolation_factor=4
-            )
-            interpolated_prediction_map[np.isnan(interpolated_prediction_map)] = np.nan
-            error_map[~ocean_mask] = np.nan  # Set land values to NaN for clear visualization
-            prediction_map[~ocean_mask] = np.nan
-            ground_truth_map[~ocean_mask] = np.nan
-            # Plot RMSE error map for the region
-            plt.figure(figsize=(8, 6))
-            plt.imshow(error_map, origin='lower', cmap='viridis')
-            plt.colorbar(label='RMSE')
-            plt.title(f"{region_size}x{region_size} RMSE Error Map for {region}")
-            plt.savefig(f"rmse_error_map_{region.replace(' ', '_')}.png")
-            plt.close()
+                    #prediction_map = self.unnormalize_with_mask(prediction_map, ocean_mask_map > 0)
+                    #ground_truth_map = self.unnormalize_with_mask(ground_truth_map, ocean_mask_map > 0)
 
-            plt.figure(figsize=(8, 6))
-            plt.imshow(prediction_map, origin='lower')
-            plt.colorbar(label='Predicted Values')
-            plt.title(f"{region_size}x{region_size} Prediction Map for {region}")
-            plt.savefig(f"prediction_map_{region.replace(' ', '_')}.png")
-            plt.close()
+                    #ocean_mask_map[ocean_mask_map <= 0] = np.nan
+                    #error_map[ocean_mask_map <= 0] = np.nan  # Set land values to NaN for clear visualization
+                    prediction_map[ocean_mask_map <= 0] = np.nan
+                    ground_truth_map[ocean_mask_map <= 0] = np.nan
+                    avg_error_map[ocean_mask_map <= 0] = np.nan
+                    patch_avg_map[ocean_mask_map <= 0] = np.nan
+                    per_error_map[ocean_mask_map <= 0] = np.nan
+                    rmse_map = np.sqrt((prediction_map - ground_truth_map) ** 2)
+                    rmse_map[ocean_mask_map <= 0] = np.nan  # Apply the mask to RMSE map
+                    # Plot RMSE error map for the region
+                    # Plot RMSE error map for the region
+                    plt.figure(figsize=(8, 6))
+                    plt.imshow(rmse_map, origin='lower', cmap='coolwarm')
+                    plt.colorbar(label='RMSE')
+                    plt.title(f"{region_size}x{region_size} Prediction RMSE Error Map for {region} (Horizon {horizon})")
+                    plt.savefig(f"Pred_rmse_error_map_{region.replace(' ', '_')}_horizon_{horizon}.png")
+                    plt.close()
 
-            plt.figure(figsize=(10, 8))
-            plt.imshow(interpolated_prediction_map, origin='lower', cmap='coolwarm')
-            plt.colorbar(label='Predicted Values (Unnormalized)')
-            plt.title(f"Interpolated Prediction Map for {region}")
-            plt.savefig(f"interpolated_prediction_map_{region.replace(' ', '_')}.png")
-            plt.close()
+                    plt.figure(figsize=(8, 6))
+                    plt.imshow(avg_error_map, origin='lower', cmap='coolwarm')
+                    plt.colorbar(label='RMSE')
+                    plt.title(f"{region_size}x{region_size} Historical Average RMSE Error Map for {region} (Horizon {horizon})")
+                    plt.savefig(f"Historical_Average_rmse_error_map_{region.replace(' ', '_')}_horizon_{horizon}.png")
+                    plt.close()
 
-            plt.figure(figsize=(8, 6))
-            plt.imshow(ground_truth_map, origin='lower', cmap='coolwarm')
-            plt.colorbar(label='Ground Truth Values (Unnormalized)')
-            plt.title(f"{region_size}x{region_size} Ground Truth Map for {region}")
-            plt.savefig(f"ground_truth_map_{region.replace(' ', '_')}.png")
-            plt.close()
+                    plt.figure(figsize=(8, 6))
+                    plt.imshow(per_error_map, origin='lower', cmap='coolwarm')
+                    plt.colorbar(label='RMSE')
+                    plt.title(
+                        f"{region_size}x{region_size} Persistance RMSE Error Map for {region} (Horizon {horizon})")
+                    plt.savefig(f"Persistance_rmse_error_map_{region.replace(' ', '_')}_horizon_{horizon}.png")
+                    plt.close()
 
-            results.append((region, start_lat, start_lon, np.mean(error_map[error_map > 0])))
+                    plt.figure(figsize=(8, 6))
+                    plt.imshow(patch_avg_map, origin='lower', cmap='coolwarm')
+                    plt.colorbar(label='Historical Average')
+                    plt.title(f"{region_size}x{region_size} Historical Average Values (Normalized) for {region} (Horizon {horizon})")
+                    plt.savefig(f"Historical_Average_map_{region.replace(' ', '_')}_horizon_{horizon}.png")
+                    plt.close()
 
+                    # Plot Prediction map for the region
+                    plt.figure(figsize=(8, 6))
+                    plt.imshow(prediction_map, origin='lower', cmap='coolwarm')
+                    plt.colorbar(label='Predicted Values (Normalized)')
+                    plt.title(f"{region_size}x{region_size} Prediction Map for {region} (Horizon {horizon})")
+                    plt.savefig(f"prediction_map_{region.replace(' ', '_')}_horizon_{horizon}.png")
+                    plt.close()
+
+                    # Plot Ground Truth map for the region
+                    plt.figure(figsize=(8, 6))
+                    plt.imshow(ground_truth_map, origin='lower', cmap='coolwarm')
+                    plt.colorbar(label='Ground Truth Values (Normalized)')
+                    plt.title(f"{region_size}x{region_size} Ground Truth Map for {region} (Horizon {horizon})")
+                    plt.savefig(f"ground_truth_map_{region.replace(' ', '_')}_horizon_{horizon}.png")
+                    plt.close()
+
+                    # Plot Combined Ocean Mask map for the region
+                    plt.figure(figsize=(8, 6))
+                    plt.imshow(ocean_mask_map, origin='lower', cmap='coolwarm')
+                    plt.colorbar(label='Ocean Mask (1=Ocean, NaN=Land)')
+                    plt.title(f"{region_size}x{region_size} Ocean Mask for {region} (Horizon {horizon})")
+                    plt.savefig(f"ocean_mask_map_{region.replace(' ', '_')}_horizon_{horizon}.png")
+                    plt.close()
+
+                horizon_results.append((region, horizon, start_lat, start_lon, np.nanmean(rmse_map),np.nanmean(avg_error_map) , np.nanmean(per_error_map)))
+
+            results.extend(horizon_results)
         # Write results to a CSV file
         with open('rmse_results.csv', mode='w', newline='') as file:
             writer = csv.writer(file)
-            writer.writerow(["Region", "Latitude", "Longitude", "RMSE"])
+            writer.writerow(["Region", "Horizon", "Latitude", "Longitude", "Pred RMSE", "Historical Average RMSE", "Persistance RMSE"])
             writer.writerows(results)
-        print("RMSE results saved to rmse_results.csv")
+        print("RMSE, prediction, ground truth, and ocean mask maps saved for all horizons.")
 
-        # Write results to a CSV file
-        with open('rmse_results.csv', mode='w', newline='') as file:
-            writer = csv.writer(file)
-            writer.writerow(["Region", "Latitude", "Longitude", "RMSE"])
-            writer.writerows(results)
-        print("RMSE results saved to rmse_results.csv")
+
 
 # Example usage
 transform = transforms.Compose([
